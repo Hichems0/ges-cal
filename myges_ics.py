@@ -18,6 +18,7 @@ cours et vérifier que les champs (salle, intervenant...) sont bien mappés.
 import os
 import sys
 import json
+import time
 import base64
 import argparse
 import hashlib
@@ -42,15 +43,40 @@ CAMPUS_ADDRESSES = {
     "NATION1": "242 rue du Faubourg Saint-Antoine, 75012 Paris",
 }
 
+RETRY_STATUSES = {500, 502, 503, 504}
+
+
+def _get_with_retry(url, headers, params=None, allow_redirects=True,
+                    tries=4, base_delay=3):
+    """GET qui reessaie sur les erreurs serveur transitoires (myGES tombe souvent)."""
+    last_exc = None
+    for attempt in range(1, tries + 1):
+        try:
+            r = requests.get(url, headers=headers, params=params,
+                             allow_redirects=allow_redirects, timeout=30)
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+            if attempt == tries:
+                raise
+            time.sleep(base_delay * attempt)
+            continue
+        if r.status_code in RETRY_STATUSES and attempt < tries:
+            print(f"  myGES a repondu {r.status_code}, nouvelle tentative "
+                  f"({attempt}/{tries - 1})...", file=sys.stderr)
+            time.sleep(base_delay * attempt)
+            continue
+        return r
+    if last_exc:
+        raise last_exc
+
 
 def get_token(user: str, password: str) -> str:
     """Auth Basic -> l'API répond par une redirection dont le fragment porte le token."""
     creds = base64.b64encode(f"{user}:{password}".encode()).decode()
-    r = requests.get(
+    r = _get_with_retry(
         AUTH_URL,
         headers={"Authorization": f"Basic {creds}", "User-Agent": UA},
         allow_redirects=False,          # la redirection est en scheme custom, on la lit à la main
-        timeout=30,
     )
     loc = r.headers.get("Location") or r.headers.get("location")
     if not loc:
@@ -69,11 +95,10 @@ def get_token(user: str, password: str) -> str:
 
 
 def fetch_agenda(token: str, start_ms: int, end_ms: int) -> list:
-    r = requests.get(
+    r = _get_with_retry(
         f"{API_BASE}/me/agenda",
         headers={"Authorization": f"Bearer {token}", "User-Agent": UA},
         params={"start": start_ms, "end": end_ms},
-        timeout=30,
     )
     r.raise_for_status()
     data = r.json()
