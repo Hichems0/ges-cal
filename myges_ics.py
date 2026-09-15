@@ -31,6 +31,17 @@ AUTH_URL = ("https://authentication.kordis.fr/oauth/authorize"
 API_BASE = "https://api.kordis.fr"
 UA = "myges-ics/1.0 (+perso)"
 
+# Le champ 'campus' de l'API ne donne qu'un code -> on y attache l'adresse
+# postale pour que le lieu soit geocodable / cliquable dans l'agenda.
+# Si un cours a un campus absent de cette table, seul le code sera affiche :
+# lance `python3 myges_ics.py --debug` sur un cours de ce campus pour voir la
+# valeur exacte du champ "campus" et ajoute-la ici.
+CAMPUS_ADDRESSES = {
+    "ERARD": "21 rue Erard, 75012 Paris",
+    "VOLTAIRE1": "1 rue Bouvier, 75011 Paris",
+    "NATION1": "242 rue du Faubourg Saint-Antoine, 75012 Paris",
+}
+
 
 def get_token(user: str, password: str) -> str:
     """Auth Basic -> l'API répond par une redirection dont le fragment porte le token."""
@@ -94,6 +105,19 @@ def ics_escape(text) -> str:
             .replace("\n", "\\n"))
 
 
+def _format_room(room: dict) -> str:
+    """Ex : 'Salle 13 (1er etage) - ERARD, 21 rue Erard, 75012 Paris'."""
+    label = room.get("name") or ""
+    if room.get("floor"):
+        label += f" ({room['floor']})"
+    campus = room.get("campus")
+    if campus:
+        addr = CAMPUS_ADDRESSES.get(campus.strip().upper())
+        campus_part = f"{campus}, {addr}" if addr else campus
+        label = f"{label} - {campus_part}" if label else campus_part
+    return label.strip()
+
+
 def rooms_str(item: dict) -> str:
     """La salle peut arriver sous 'rooms' (liste), 'room' (objet) ou en champ plat."""
     parts = []
@@ -101,24 +125,18 @@ def rooms_str(item: dict) -> str:
     if isinstance(rooms, list):
         for room in rooms:
             if isinstance(room, dict):
-                label = room.get("name") or ""
-                if room.get("floor"):
-                    label += f" ({room['floor']})"
-                if room.get("campus"):
-                    label = f"{label}, {room['campus']}" if label else room["campus"]
-                if label:
-                    parts.append(label)
+                lbl = _format_room(room)
+                if lbl:
+                    parts.append(lbl)
     elif isinstance(item.get("room"), dict):
-        room = item["room"]
-        label = " ".join(x for x in (room.get("name") or "",
-                                     room.get("campus") or "") if x)
-        if label:
-            parts.append(label)
+        lbl = _format_room(item["room"])
+        if lbl:
+            parts.append(lbl)
     else:
         flat = get_field(item, "room_name", "salle", "room")
         if flat:
             parts.append(str(flat))
-    return ", ".join(parts)
+    return " | ".join(parts)
 
 
 def make_uid(item: dict, start_ms) -> str:
